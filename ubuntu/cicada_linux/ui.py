@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QFormLayout,
     QSplitter, QDialog)
 from .storage import Store, data_root, write_json
 from .core import markdown
-from .pipewire import monitors, PipeWireCapture
-from .providers import LocalASR, CloudASR, TextService
+from .pipewire import CaptureError, monitors, PipeWireCapture
+from .providers import LocalASR, CloudASR, ProviderError, TextService
 from .workflow import Meeting
 
 
@@ -21,23 +21,32 @@ DEFAULTS = dict(backend='local', local_model='small', device='auto', language='a
 class Worker(QThread):
     changed = Signal(object)
     warning = Signal(str)
+    listening = Signal(str)
 
     def __init__(self, config, source, store):
         super().__init__()
         self.config, self.source, self.store = config, source, store
         self.stop = threading.Event()
+        self.result = 'Stopped. Meeting saved.'
 
     def run(self):
         c = self.config
         try:
             asr = (LocalASR(c['local_model'], c['device'], c['language']) if c['backend'] == 'local'
                    else CloudASR(c['asr_url'], c['asr_key'], c['asr_model'], c['language']))
+            if self.stop.is_set():
+                self.result = 'Stopped before capture started.'
+                return
+            self.listening.emit('Listening with cloud audio upload' if c['backend'] == 'cloud'
+                                else 'Listening with local speech recognition')
             service = TextService(c['text_url'], c['text_key'], c['text_model']) if c['text_key'] else None
             meeting = Meeting(PipeWireCapture(self.source), asr, service, self.store, c['language'], c['target'])
             meeting.run(self.stop, lambda value: self.changed.emit(copy.deepcopy(value)), self.warning.emit)
+        except (CaptureError, ProviderError) as error:
+            self.result = str(error)
         except Exception as error:
             # Provider exceptions must not reveal response bodies or credentials.
-            self.warning.emit(f'{type(error).__name__}: processing stopped. Verify dependencies and provider configuration; saved history is retained.')
+            self.result = f'{type(error).__name__}: processing stopped. Verify dependencies and provider configuration.'
 
 
 class Window(QWidget):
@@ -48,12 +57,15 @@ class Window(QWidget):
         self.store, self.worker, self.current = Store(), None, None
         config = DEFAULTS.copy()
         try:
-            config.update(json.loads((data_root() / 'settings.json').read_text()))
+            saved = json.loads((data_root() / 'settings.json').read_text(encoding='utf-8'))
+            if isinstance(saved, dict):
+                config.update({key: saved[key] for key in config if isinstance(saved.get(key), str)})
         except (OSError, ValueError):
             pass
         layout = QVBoxLayout(self)
         self.status = QLabel('Select a playback monitor. Local ASR keeps audio local; cloud ASR uploads speech to your endpoint. Text translation and notes send transcripts to the text endpoint.')
         self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.PlainText)
         layout.addWidget(self.status)
         form = QFormLayout()
         self.fields = {}
@@ -141,17 +153,28 @@ class Window(QWidget):
         if config['backend'] == 'cloud' and not config['asr_key']:
             self.status.setText('Cloud ASR requires an API key.')
             return
-        write_json(data_root() / 'settings.json', config)
+        try:
+            write_json(data_root() / 'settings.json', config)
+        except OSError:
+            self.status.setText('Could not save settings. Check permissions on the Cicada data directory.')
+            return
         self.worker = Worker(config, self.source.currentData(), self.store)
         self.worker.changed.connect(self.display)
         self.worker.warning.connect(self.status.setText)
+        self.worker.listening.connect(self.show_listening)
         self.worker.finished.connect(self.finished)
         self.form_widget.setEnabled(False)
         self.toggle.setText('Stop')
-        self.status.setText('Listening — cloud audio upload enabled' if config['backend'] == 'cloud' else 'Listening — local speech recognition')
+        self.caption.setText('Waiting for speech')
+        self.status.setText('Starting speech recognition and audio capture…')
         self.worker.start()
 
+    def show_listening(self, message):
+        if self.worker and not self.worker.stop.is_set():
+            self.status.setText(message)
+
     def finished(self):
+        self.status.setText(self.worker.result)
         self.worker.deleteLater()
         self.worker = None
         self.toggle.setEnabled(True)
@@ -164,7 +187,10 @@ class Window(QWidget):
             path, _ = QFileDialog.getSaveFileName(self, 'Export', 'meeting.md', 'Markdown (*.md)')
             if path:
                 from pathlib import Path
-                Path(path).write_text(markdown(self.current), encoding='utf-8')
+                try:
+                    Path(path).write_text(markdown(self.current), encoding='utf-8')
+                except OSError:
+                    self.status.setText('Could not export the meeting. Choose a writable location.')
 
     def closeEvent(self, event):
         if self.worker:

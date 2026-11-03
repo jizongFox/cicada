@@ -1,4 +1,5 @@
 """One session owner. Capture/provider/storage implementations are injected."""
+from contextlib import closing
 import time
 import queue
 import threading
@@ -17,11 +18,12 @@ class Meeting:
         failure = []
         def produce():
             try:
-                for audio in self.capture.chunks(stop):
-                    try:
-                        inbox.put_nowait(audio)
-                    except queue.Full:
-                        raise RuntimeError('Recognition cannot keep up with capture; session stopped.')
+                with closing(self.capture.chunks(stop)) as capture:
+                    for audio in capture:
+                        try:
+                            inbox.put_nowait(audio)
+                        except queue.Full:
+                            raise RuntimeError('Recognition cannot keep up with capture. Session stopped.') from None
             except Exception as error:
                 failure.append(error)
                 stop.set()
@@ -32,18 +34,26 @@ class Meeting:
                 try:
                     yield inbox.get(timeout=.2)
                 except queue.Empty:
-                    pass
+                    if stop.is_set():
+                        # Allow the recorder to deliver its final fragment, then
+                        # bound waiting even if an adapter ignores Stop.
+                        thread.join(timeout=5)
+                        if thread.is_alive() and inbox.empty():
+                            raise RuntimeError('Audio capture did not stop.')
             if failure:
                 raise failure[0]
         finally:
             stop.set()
             thread.join(timeout=5)
+            if thread.is_alive():
+                raise RuntimeError('Audio capture did not stop.')
 
     def run(self, stop, changed, warning):
         last_notes = time.monotonic()
         self.store.save(self.value)
+        stream = self.audio_stream(stop)
         try:
-            for audio in self.audio_stream(stop):
+            for audio in stream:
                 text = self.asr.transcribe(audio)
                 if not text:
                     continue
@@ -64,9 +74,12 @@ class Meeting:
             if self.intelligence and self.value['lines']:
                 self.update_notes(warning)
         finally:
-            self.value['endedAt'] = now()
-            self.store.save(self.value)
-            changed(self.value)
+            try:
+                stream.close()
+            finally:
+                self.value['endedAt'] = now()
+                self.store.save(self.value)
+                changed(self.value)
 
     def update_notes(self, warning):
         try:

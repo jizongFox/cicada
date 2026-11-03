@@ -1,11 +1,13 @@
-"""PipeWire's PulseAudio compatibility interface. Owns capture and segmentation."""
+"""Playback monitor discovery and audio segmentation."""
 import array
+from contextlib import closing
 import json
 import math
-import selectors
 import subprocess
 import sys
+
 from .core import Audio
+from .pulse import CaptureError, record
 
 
 def monitors():
@@ -15,35 +17,54 @@ def monitors():
             for s in json.loads(result.stdout) if s['name'].endswith('.monitor')]
 
 
+def rms(pcm):
+    samples = array.array('h', pcm)
+    if sys.byteorder != 'little':
+        samples.byteswap()
+    return math.sqrt(sum(s*s for s in samples) / len(samples)) if samples else 0
+
+
 class Segmenter:
-    """Energy gate: end after 600 ms quiet or 8 seconds. Retain every PCM byte."""
+    """Use relative energy to place boundaries. Discard only digital silence."""
     def __init__(self, rate=16000):
-        self.rate, self.position, self.start = rate, 0, 0
+        self.rate, self.start = rate, 0
         self.buffer = bytearray()
-        self.quiet = 0
-        self.voice = False
+        self.quiet = self.pause_end = 0
+        self.peak = 0
 
     def feed(self, pcm):
-        samples = array.array('h', pcm)
-        if sys.byteorder != 'little':
-            samples.byteswap()
-        rms = math.sqrt(sum(s*s for s in samples) / max(1, len(samples)))
-        if not self.buffer:
-            self.start = self.position
+        if not pcm:
+            return None
+        frames = len(pcm) // 2
+        energy = rms(pcm)
+        self.peak = max(energy, self.peak * math.exp(-frames / (self.rate * .3)))
         self.buffer.extend(pcm)
-        self.position += len(samples)
-        if rms > 180:
-            self.voice, self.quiet = True, 0
+        if energy <= self.peak * .05:
+            self.quiet += frames
+            if self.quiet >= self.rate * .12:
+                self.pause_end = len(self.buffer)
         else:
-            self.quiet += len(samples)
-        if self.quiet >= self.rate * .6 or len(self.buffer) >= self.rate * 2 * 8:
+            self.quiet = 0
+        if self.quiet >= self.rate * .6:
             return self.flush()
+        if len(self.buffer) >= self.rate * 16:
+            # Prefer a recent pause to cutting a word at the eight-second limit.
+            if self.pause_end >= len(self.buffer) - self.rate * 3:
+                return self.take(self.pause_end)
+            return self.flush()
+        return None
+
+    def take(self, size):
+        pcm = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        start = self.start / self.rate
+        self.start += size // 2
+        self.quiet = self.pause_end = 0
+        self.peak = rms(self.buffer)
+        return Audio(pcm, start, self.rate) if any(pcm) else None
 
     def flush(self):
-        audio = Audio(bytes(self.buffer), self.start / self.rate, self.rate) if self.voice else None
-        self.buffer.clear()
-        self.quiet, self.voice = 0, False
-        return audio
+        return self.take(len(self.buffer))
 
 
 class PipeWireCapture:
@@ -52,39 +73,29 @@ class PipeWireCapture:
 
     def chunks(self, stop):
         segmenter = Segmenter()
-        proc = subprocess.Popen(['parec', '--device=' + self.source, '--format=s16le',
-                                 '--rate=16000', '--channels=1', '--latency-msec=100'],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        pending = b''
+        frame_bytes = segmenter.rate // 50 * 2
+        pending = bytearray()
+        failure = None
         try:
-            with selectors.DefaultSelector() as selector:
-                selector.register(proc.stdout, selectors.EVENT_READ)
-                while not stop.is_set():
-                    if not selector.select(.2):
-                        if proc.poll() is not None:
-                            raise RuntimeError('Audio capture stopped; check the selected monitor.')
-                        continue
-                    block = proc.stdout.read1(3200)
-                    if not block:
-                        raise RuntimeError('Audio capture disconnected.')
-                    pending += block
-                    while len(pending) >= 3200:
-                        block, pending = pending[:3200], pending[3200:]
-                        audio = segmenter.feed(block)
+            with closing(record(self.source, stop, segmenter.rate)) as blocks:
+                for block in blocks:
+                    pending.extend(block)
+                    for offset in range(0, len(pending) - frame_bytes + 1, frame_bytes):
+                        audio = segmenter.feed(pending[offset:offset + frame_bytes])
                         if audio:
                             yield audio
-                if pending:
-                    audio = segmenter.feed(pending[:len(pending)//2*2])
-                    if audio:
-                        yield audio
-                audio = segmenter.flush()
-                if audio:
-                    yield audio
-        finally:
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            proc.stdout.close()
+                    del pending[:len(pending) // frame_bytes * frame_bytes]
+        except CaptureError as error:
+            failure = error
+
+        # Bytes already accepted from the selected source remain valid after a
+        # disconnect. Emit them before surfacing the capture failure.
+        if pending:
+            audio = segmenter.feed(pending[:len(pending) // 2 * 2])
+            if audio:
+                yield audio
+        audio = segmenter.flush()
+        if audio:
+            yield audio
+        if failure:
+            raise failure

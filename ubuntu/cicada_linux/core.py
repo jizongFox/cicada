@@ -1,6 +1,6 @@
 """Portable session rules and ports. No desktop, OS audio or ML imports."""
 from dataclasses import dataclass
-from typing import Protocol, Iterable
+from typing import Protocol, Generator
 from uuid import uuid4
 from datetime import datetime, timezone
 
@@ -13,7 +13,7 @@ class Audio:
 
 
 class Capture(Protocol):
-    def chunks(self, stop) -> Iterable[Audio]: ...
+    def chunks(self, stop) -> Generator[Audio, None, None]: ...
 
 
 class ASR(Protocol):
