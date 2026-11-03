@@ -145,3 +145,8 @@ See [AGENTS.md](AGENTS.md) for architecture details and release workflows. The w
 ## License
 
 [Apache-2.0](LICENSE). The BlackHole 2ch virtual audio driver is licensed under the GPL; Cicada does not bundle it and downloads the official release on demand when you choose to install it. The bundled voiceprint model is [WeSpeaker](https://github.com/wenet-e2e/wespeaker)'s ResNet34-LM trained on VoxCeleb, licensed CC BY 4.0, converted to Core ML by `scripts/convert-voiceprint.py`.
+
+
+## Ubuntu 26.04 preview
+
+The separate Python/PySide6 implementation in `ubuntu/` includes local/cloud ASR, captions, translation, notes and history. This is a development preview pending live acceptance testing. See [Ubuntu README](ubuntu/README.md) for setup, module boundaries and limitations.

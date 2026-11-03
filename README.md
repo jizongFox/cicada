@@ -144,3 +144,8 @@ scripts/package.sh          # 打包正式版 DMG、zip 和 SHA-256 校验值
 ## 开源协议
 
 本项目采用 [Apache-2.0](LICENSE) 协议开源。同声传译用到的虚拟麦克风驱动 BlackHole 2ch 采用 GPL 协议，知了安装包里不打包它，在你点安装时直接从它的官方发布地址下载。随 app 附带的声纹模型是 [WeSpeaker](https://github.com/wenet-e2e/wespeaker) 在 VoxCeleb 上训练的 ResNet34-LM，采用 CC BY 4.0 协议，由 `scripts/convert-voiceprint.py` 转成 Core ML。
+
+
+## Ubuntu 26.04 预览版
+
+Ubuntu 实现在 `ubuntu/`：Python + PySide6，支持本地/云端 ASR、字幕、翻译、纪要和历史记录。当前为待实机验证的开发预览，安装、模块边界及限制见 [Ubuntu README](ubuntu/README.md)。

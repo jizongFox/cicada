@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.1.0-ubuntu-preview",
+    "date": "2026-11-03",
+    "title": "Ubuntu 开发预览",
+    "summary": "新增独立 Python/PySide6 Ubuntu 实现，待实机验收。",
+    "image": null,
+    "items": [
+      {
+        "kind": "new",
+        "title": "Ubuntu 字幕与会议记录预览。",
+        "text": "提供本地/云端 ASR、字幕、翻译、纪要、历史记录与 Markdown 导出；音频、模型服务、流程和界面分层，macOS 继续使用 Swift。当前尚未验证真实音频、CUDA 和带凭据的云端服务。"
+      }
+    ]
+  },
+  {
     "version": "1.0.0",
     "date": "2026-11-03",
     "title": "第一个正式版",
