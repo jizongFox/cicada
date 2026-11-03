@@ -16,7 +16,7 @@ Cicada (知了, formerly Live Subs): a macOS app, run from the menu bar, that tu
 - The notes window is a non-activating panel with `sharingType = .none`: it must never take focus, and stays out of screen captures unless the user turns on 共享屏幕时让对方看到 (then it shows a badge).
 - UI and engine state are `@MainActor`; audio callbacks hand buffers to `AudioRouter`'s queue.
 - Don't change the release bundle id `com.wquguru.cicada` or the ad-hoc designated requirement: permissions are tied to them.
-- No third-party dependencies, no `.xcodeproj`; Command Line Tools only.
+- macOS targets: no third-party dependencies, no `.xcodeproj`; Command Line Tools only. Ubuntu lives under `ubuntu/` with its own Python dependencies; see `ubuntu/README.md` for boundaries and checks.
 
 ## Design
 
@@ -54,3 +54,4 @@ scripts/deploy-site.sh                 # build the site, wrangler deploy to the 
 - Every user-visible change also gets a Chinese item in `site/changelog.json`, the website's changelog; keep `README.md` (Chinese, the default) and `README.en.md` in step.
 - Versions are semver from 1.0.0: patch for fixes only, minor for features, major only when users must grant permissions again.
 - This file stays under 6 KB with these sections; `scripts/check-agents.py` enforces it in `scripts/test.sh`, CI and the pre-commit hook. Implementation detail belongs in code comments, not here.
+
